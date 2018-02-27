@@ -3,6 +3,8 @@ import tornado.web
 import tornado.ioloop
 import tornado.escape
 import tornado.httpserver
+import json
+import datetime
 from tornado.options import define, options, parse_command_line
 
 from paypalrestsdk import BillingPlan, BillingAgreement, configure
@@ -114,10 +116,10 @@ class CreateHandler(tornado.web.RequestHandler):
             "type": data['type'],
             "merchant_preferences": {
                 "auto_bill_amount": "yes",
-                "cancel_url": "/cancel",
+                "cancel_url": "https://example.com/cancel",
                 "initial_fail_amount_action": "continue",
                 "max_fail_attempts": "1",
-                "return_url": '/success',
+                "return_url": 'https://example.com/success',
                 "setup_fee": {
                     "currency": data['currency'],
                     "value": data['setup_fee']
@@ -132,7 +134,7 @@ class CreateHandler(tornado.web.RequestHandler):
                     "type": data['payment_type'],
                     "amount": {
                         "currency": data['currency'],
-                        "value": "REGULAR"
+                        "value": data['value']
                     },
                     "charge_models": [
                         {
@@ -155,12 +157,30 @@ class CreateHandler(tornado.web.RequestHandler):
         }
         billing_plan = BillingPlan(billing_plan_attributes)
         if billing_plan.create():
+            msg = billing_plan.id
             print(
-                "Billing Plan [%s] created successfully" % (billing_plan.id))
+                "Billing Plan [%s] created successfully" % (msg))
         else:
-            print(billing_plan.error)
+            msg = billing_plan.error
+            print(msg)
+
+        self.write({"response": msg})
 
     def get(self):
+        plans_created = []
+        plans_active = []
+        plans_created_query_dict = BillingPlan.all({"status": "CREATED",
+                                                    "sort_order": "DESC"})
+        plans_created = plans_created_query_dict.to_dict().get('plans')
+
+        plans_active_query_dict = BillingPlan.all({"status": "ACTIVE",
+                                                   "page_size": 5, "page": 0, "total_required": "yes"})
+        plans_active = plans_active_query_dict.to_dict().get('plans')
+
+        self.write({"response": {"plans_created": plans_created, "plans_active": plans_active}})
+
+
+    def getMock(self):
         # Simulate Post Response Success
         response = {
           "id": "P-7DC96732KA7763723UOPKETA",
@@ -259,54 +279,41 @@ class CreateHandler(tornado.web.RequestHandler):
 
 
 class ActivateHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/activate \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
-    def post(self):
+    def post(self, status="1"):
         data = json.loads(self.request.body.decode('utf-8'))
         billing_plan = BillingPlan.find(data['id'])
-        if billing_plan.activate():
-            print("Billing Plan [%s] activated successfully" %
-                  (billing_plan.id))
-        else:
-            print(billing_plan.error)
-        self.write({'response': 'Activate Success !!'})
 
-
-class InactivateHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/activate \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
-    def post(self):
-        data = json.loads(self.request.body.decode('utf-8'))
-        billing_plan = BillingPlan.find(data['id'])
-        if billing_plan.inactivate():
-            print("Billing Plan [%s] inactivated successfully" %
-                  (billing_plan.id))
+        if status == "1":
+            if billing_plan.activate():
+                msg = "Billing Plan activated successfully"
+                print(msg)
+            else:
+                msg = billing_plan.error
+                print(msg)
         else:
-            print(billing_plan.error)
-        self.write({'response': 'Inactivate Success !!'})
+            billing_plan_update_attributes = [{
+                "op": "replace",
+                "path": "/",
+                "value": {
+                    "state": "INACTIVE"
+                }
+            }]
+            if billing_plan.replace(billing_plan_update_attributes):
+                msg = "Billing Plan inactivated successfully"
+                print(msg)
+            else:
+                msg = billing_plan.error
+                print(msg)
+        self.write({'response': msg})
 
 
 class SubscribeHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/subscribe \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
     def post(self):
         data = json.loads(self.request.body.decode('utf-8'))
         billing_agreement = BillingAgreement({
             "name": "Organization plan name",
             "description": "Agreement for " + data['name'],
-            "start_date": (datetime.now() + timedelta(year=1)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "start_date": (datetime.datetime.now() + datetime.timedelta(days=365)).strftime('%Y-%m-%dT%H:%M:%SZ'),
             "plan": {
                 "id": data['id']
             },
@@ -335,41 +342,25 @@ class SubscribeHandler(tornado.web.RequestHandler):
 
 
 class ExecuteHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/subscribe \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
     def post(self):
         data = json.loads(self.request.body.decode('utf-8'))
         payment_token = data['token']
         billing_agreement_response = BillingAgreement.execute(payment_token)
-        return redirect(url_for('agreement_details', id=billing_agreement_response.id))
         self.write({'response': billing_agreement_response.id })
 
 
 class AgreementHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/subscribe \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
     def get(self):
         payment_token = self.get_argument('payment_token')
         billing_agreement = BillingAgreement.find(payment_token)
-        self.write({'response': billing_agreement })
+        print('billing_agreement', billing_agreement)
+        self.write({'response': 'billing_agreement' })
 
     def put(self):
         data = json.loads(self.request.body.decode('utf-8'))
         billing_agreement_id = data['billing_agreement_id']
         billing_agreement = BillingAgreement.find(billing_agreement_id)
-        billing_agreement_update_attributes = [
-            {
-                "op": "replace",
-                "path": "/",
-                "value": {
+        value = {
                     "description": "New Description",
                     "name": "New Name",
                     "shipping_address": {
@@ -380,7 +371,12 @@ class AgreementHandler(tornado.web.RequestHandler):
                         "postal_code": "95112",
                         "country_code": "US"
                     }
-                }
+        }
+        billing_agreement_update_attributes = [
+            {
+                "op": "replace",
+                "path": "/",
+                "value": value
             }
         ]
 
@@ -388,12 +384,6 @@ class AgreementHandler(tornado.web.RequestHandler):
 
 
 class PaymentHistoryHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/subscribe \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
     def get(self):
         payment_token = self.get_argument('payment_token')
         start_date, end_date = self.get_argument('start_date'), self.get_argument('end_date')
@@ -403,12 +393,6 @@ class PaymentHistoryHandler(tornado.web.RequestHandler):
 
 
 class SubscriptionsHandler(tornado.web.RequestHandler):
-    '''
-        curl -v -X PATCH https://localhost:5000/subscribe \
-        -H "Content-Type:application/json" \
-        -H "Authorization: Bearer Access-Token" \
-        -d '{"id": "P-7DC96732KA7763723UOPKETA"}'
-    '''
     def get(self):
         status = self.get_argument('status') # ACTIVE INACTIVE
         plans = []
@@ -425,16 +409,15 @@ class Application(tornado.web.Application):
     def __init__(self):
         handlers = [
             (r"/hello", HelloHandler),
-            (r"/create", CreateHandler),
-            (r"/activate", ActivateHandler),
-            (r"/inactivate", InactivateHandler),
+            (r"/plan", CreateHandler),
+            (r"/activate/(\d+)", ActivateHandler),
+            (r"/payment-history", PaymentHistoryHandler),
+            (r"/subscriptions", SubscriptionsHandler),
             (r"/subscribe", SubscribeHandler),
             (r"/execute", ExecuteHandler),
+            
             (r"/agreement", AgreementHandler),
-            (r"/payment-history", PaymentHistoryHandler),
-            (r"/subscriptions", HelloHandler),
-
-            (r"/admin", SubscriptionsHandler),
+            (r"/admin", HelloHandler),
             (r"/login", HelloHandler),
             (r"/logout", HelloHandler),
         ]
